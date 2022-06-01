@@ -1,3 +1,4 @@
+import * from 'http://epilog.stanford.edu/javascript/epilog.js';
 
 
 

@@ -1,0 +1,865 @@
+<html>
+
+<!--=======================================================================-->
+
+<head>
+  <title>Our Multithread MCTS Player</title>
+  <script type='text/javascript' src='http://epilog.stanford.edu/javascript/epilog.js'></script>
+  <script type='text/javascript' src='http://gamemaster.stanford.edu/javascript/autoplayer.js'></script>
+  <script type='text/javascript' src='http://ggp.stanford.edu/gamemaster/javascript/grounder.js'></script>
+  <script type='text/javascript' src='http://ggp.stanford.edu/gamemaster/javascript/factor.js'></script>
+  <script type='text/javascript'>
+
+//==============================================================================
+// Player parameters
+//==============================================================================
+
+var player = 'help_let_me_out';
+var manager = 'tester_help_let_me_out';
+
+function doplayer ()
+ {player = read(prompt("What is your player's identifier?"));
+  document.getElementById('player').innerHTML = player;
+  return true}
+
+function domanager ()
+ {manager = read(prompt("What is your manager's identifier?"));
+  document.getElementById('manager').innerHTML = manager;
+  return true}
+
+//==============================================================================
+// End of player parameters
+//==============================================================================
+  </script>
+  <script type='text/javascript'>
+
+
+//==============================================================================
+// Player code goes here
+//==============================================================================
+
+// Actual tree node constructor.
+class Node {
+  constructor(this_state, value=0, visits=0, parent=null, children=seq(), move=null) {
+    this.state = this_state;
+    this.value = value;
+    this.visits = visits;
+    this.parent = parent;
+    // if (parent !== null) {parent.add_child(this)};
+    this.children = children;
+    this.move = move;
+    this.interim_value = 0;
+    this.interim_visits = 0;
+  }
+
+// Determines which path is more promising.
+// var K is the exploration parameter – we can try different values.
+  select_val (total, curr_role) {
+    if (this.parent === null) {var parent_visits = total;}
+    else {var parent_visits = this.parent.visits;}
+    var exploit = this.value/this.visits;
+    if (findcontrol(this.parent.state, library) !== role) { exploit *= -1 }; // In multiplayer games, pick the low score if it's your opponent's turn.
+    // console.log(exploit);
+    return exploit + explore * Math.sqrt(2*Math.log(Math.max(parent_visits,1))/this.visits); // change explore parameter based on how player plays
+  }
+}
+
+function ping ()
+ {return 'ready'}
+
+function start (r,rs,sc,pc)
+ {role = r;
+  startclock = sc;
+  playclock = pc;
+  var oldlibrary = definemorerules([],rs.slice(1));
+  library = definemorerules([],rs.slice(1));
+  var deadline = Date.now()+(startclock-1)*1000;
+  grounded = false;
+  [library, grounded] = ground(library, deadline);
+  library = definemorerules([], library);
+  // console.log(JSON.stringify(library[0]) === JSON.stringify(["role","robot"]));
+  if (JSON.stringify(library) === JSON.stringify(oldlibrary)) { grounded = false };
+  console.log(library);
+  console.log(grounded);
+
+  if (grounded) {
+      library = dosimplify(library, deadline);
+      library = definemorerules([], library);
+  } else {
+      library = oldlibrary;
+  }
+
+  roles = findroles(library);
+  state = findinits(library);
+  console.log(roles);
+  console.log(state);
+  console.log("our role:", role);
+  console.log(findlegals(state, library));
+  base_node = 0;
+  base_node = new Node(state);
+  return 'ready'}
+
+function play (move)
+  {if (move!==nil) {state = simulate(move,state,library)};
+  update_base_node(move, state);
+  if (findcontrol(state,library)!==role) {return false};
+  return bestmove(state)}
+
+function stop (move)
+ {return false}
+
+function abort ()
+ {return false}
+
+//==============================================================================
+// our code
+//==============================================================================
+
+// main simplify function
+function dosimplify (rules,deadline)
+ {var actions = compchangers(read('goal(robot,100) & terminal'),[],rules);
+  var newrules = adjustlegalities(actions,library,rules,deadline);
+  return newrules}
+
+// simplify helper #1
+function adjustlegalities (actions,oldrules,newrules,deadline)
+ {var oldlegals = indexees('legal',oldrules);
+  // console.log("Oldlegals:", oldlegals);
+  var newlegals = getlegalities(actions,newrules,deadline);
+  // console.log("Newlegals:", newlegals);
+  if (! newlegals) {console.log("Ran out of time in simplify"); return oldrules};
+  // console.log("Adjustoutput:", difference(oldrules,oldlegals).concat(newlegals));
+  return difference(oldrules,oldlegals).concat(newlegals)}
+
+// simplify helper #2
+function getlegalities (actions,rules,deadline)
+ {var legals = [];
+  for (var i=0; i<rules.length; i++)
+      {if (Date.now() > deadline) {return false};
+       var head = rulehead(rules[i]);
+       if (!symbolp(head) & head[0]==='legal' && findp(head[1],actions))
+       legals.push(rules[i])};
+  return legals}
+
+// main ground function
+function ground (rules, deadline) {
+  var g_facts = groundfacts(library);
+  var g_rules = [];
+  for (var i=0; i<library.length; i++)
+      { if (Date.now() > deadline) {return (rules, false)};
+        g_rules = groundrule(library[i],g_facts,g_rules)};
+  g_rules = zniquify(g_rules);
+  return [g_rules, true];
+ }
+
+function update_base_node (move, state) {
+    for (var i=0; i<base_node.children.length; i++) {   // If the move is already in the tree,
+        if (base_node.children[i].move === move) {    // set the base_node to the corresponding node
+            base_node = base_node.children[i];
+            base_node.parent = null;
+            return true;
+        }
+    }
+    base_node = new Node(state);        // If we haven't mapped the move yet, make a new base_node
+}
+
+
+// -----------
+// PARAMETERS
+// -----------
+
+deadline_offset = Math.min(playclock/5, 2);   // How many seconds early we should return.       (see bestmove)
+num_charges = 2;     // How many depthcharges we send down per node we explore. (see go_deep)
+explore = 2;       // How much we explore vs exploit.      (see select_val)
+discount_factor = 0.9;
+
+// --------------
+// MAIN FUNCTION
+// --------------
+
+function bestmove (state) {
+  console.log("Begin move.");
+  var deadline = Date.now()+(playclock-deadline_offset)*1000;  // Change this to be more or less aggressive.
+  var actions = findlegals(state,library);
+  if (actions.length===0) {return false};
+  call_webworkers(deadline);
+  process_tree(deadline);     // Update tree using Monte Carlo until deadline.
+  var result = best_next_move();  // Pick the child node with the highest average value.
+  debug(false, false, 6, false, true, result);  // Print useful things to console.
+
+  return result.move;
+}
+
+
+// --------------------------
+// WEBWORKER MINION FUNCTIONS
+// --------------------------
+
+function call_webworkers (deadline) {
+  console.log("enter webworkers")
+  var fs = require('fs');
+  var stats = fs.statSync("..src/WebWorker_MCTS.js");
+  console.log('try is file ? ' + stats.isFile());
+
+  var worker1 = new Worker('https://nate-db.github.io/WebWorker_MCTS.js');
+  var worker2 = new Worker('https://nate-db.github.io/WebWorker_MCTS.js');
+  console.log("add listeners")
+
+  worker1.addEventListener('message', collect_response);
+  worker2.addEventListener('message', collect_response);
+  workers = [worker1, worker2];
+  worker_responses = []
+  let worker_deadline = deadline - 500;
+  let message = [base_node, library, role, roles, grounded, worker_deadline];
+  console.log("post message")
+  worker1.postMessage(message);
+  worker2.postMessage(message);
+}
+
+function collect_response (msg) {
+  worker_responses.push(msg.data);
+}
+
+// --------------------------
+// TREE PROCESSING FUNCTIONS
+// --------------------------
+
+// Master tree processing function.
+function process_tree (deadline) {
+    var h = 0;
+    while (Date.now()<deadline) {
+    // while (h<11) {
+        // console.log("start processing")
+        var choice_node = end_node(base_node, h);
+        // debug (false, true, 4);
+        // console.log("Choice:");
+        // console.log(choice_node);
+        var total_score = 0;
+        for (var i=0; i<num_charges; i++) {
+            var score;
+            var depth;
+            [score, depth] = go_deep(choice_node.state, deadline);
+            total_score += score * (discount_factor ** depth);
+        }
+        backpropagate(choice_node, total_score / num_charges);
+        // debug (false, true, 4);
+        h++;
+    }
+}
+
+// Finds the most promising node
+// to send depthcharges down from.
+function end_node (node, total) {
+    while (node.children.length !== 0) {
+        // choose next
+        var best_score = -Infinity;
+        var best_node = node.children[0];
+
+        var scores = [];
+        // console.log(node.children)
+        for (var i=0; i<node.children.length; i++) {    //  Loop through children, find best
+            if (node.children[i].visits === 0) {  // If child not visited, pick it
+                best_node = node.children[i];
+                break;
+            }
+            var child_score = node.children[i].select_val(total);
+            scores.push(child_score);
+            if (child_score > best_score) {
+                best_score = child_score;
+                best_node = node.children[i];
+            }
+        }
+        // console.log(scores);
+        // console.log(best_score);
+        node = best_node;
+    }
+    if (! expand(node)) {     // If it's a terminal node, expand() won't do anything.
+        return node;          // There won't be any children, so the next line won't work.
+    }
+    return random_choice(node.children);
+}
+
+// Expand the node, duh.
+function expand(node) {
+  if (findterminalp(node.state, library)) {
+    return false;
+  }
+  var actions = findlegals(node.state,library);
+  for (var i=0; i<actions.length; i++) {
+      var newstate = simulate(actions[i],node.state,library);
+      var child = new Node(newstate, 0, 0, node, seq(), actions[i]);
+      node.children.push(child);
+  }
+  return true
+}
+
+// Performs one depthcharge.
+// Returns value of terminal state at end.
+function go_deep (state, deadline) {
+    var depth = 0;
+    while (!findterminalp(state, library)) {
+        var actions = findlegals(state, library);
+        var choice = random_choice(actions);
+        state = simulate(choice, state, library);
+        if (depth % 8===0) {if (Date.now()>deadline) {console.log("end in depth"); break;}}
+        depth++;
+    }
+    return [findreward(role, state, library)*1, depth];
+}
+
+// Update all the parent nodes after depthcharge.
+function backpropagate (node, score) {
+    while (node.parent !== null) {
+        node.visits = node.visits + 1;
+        node.value = node.value + score;
+        node = node.parent;
+    }
+    return true;
+  }
+
+
+// --------------------------------
+// FIND BEST MOVE AFTER PROCESSING
+// --------------------------------
+
+function best_next_move () {
+    var best_score = 0;
+    var result = base_node.children[0];
+    for (var i=0; i<base_node.children.length; i++) {
+        var newscore = base_node.children[i].value / base_node.children[i].visits;
+        if (newscore > best_score) {
+            best_score = newscore;
+            result = base_node.children[i];
+        }
+    }
+    return result;
+}
+
+// -------------
+// SECONDARY MCS
+// -------------
+
+// chooses item from seq given seq of list of numerical weights
+function weighted_random(items, weights) {
+  if (items.length === 1) {return items[0]};
+  var total = 0;
+  for (var i=0; i<weights.length; i++) {
+    total += weights[i];
+  } var rand_float = Math.random();
+  var curr = 0;
+  for (var i=0; i<weights.length; i++) {
+    curr += weights[i] / total;
+    if (rand_float < curr) {return items[i]};
+  } return false;
+}
+
+// random walk thru known nodes, weighted by const select_val
+function choose_start_node_MCS(base_node) {
+  var next_node = base_node;
+  while (next_node.children.length > 0) {
+    var weights = [];
+    for (var i=0; i<next_node.children.length; i++) {
+      weights.push(next_node.children[i].select_val());
+    next_node = weighted_random(next_node.children, weights);
+  } return next_node;
+}
+}
+
+// for running in parallel to MCTS, only returns information on immediate plays
+function simultaneous_MCS(base_node, deadline) {
+  var len_plays = base_node.children.length;
+  var play_vals = [];
+  for (var i=0; i<len_plays; i++) {
+    play_vals.push([0,0]);
+  }
+  while (true) {
+    for (var i=0; i<len_plays; i++){
+      if (Date.now()>deadline) {return play_vals};
+      var choice_node = choose_start_node_MCS(base_node.children[i]);
+      var [score, depth] = go_deep(choice_node.state, deadline);
+      var total_score = score * (discount_factor ** depth);  // adjust when we change reward fn
+      play_vals[i][0] = (play_vals[i]*play_vals[i][1] + total_score) / (play_vals[i][1]+1); // keeps running avg score
+      play_vals[i][1]++; // keeps count of depthcharges sent from that play
+    }
+  }
+}
+
+// if there is some error whereby the children of the interim (parallel) node
+// and the corresponding mainstream node become out of order, this should fix interval
+// I don't think this should be an issue, but should make it safer
+function resort_merging_nodes(base_node, interim_base_node, index) {
+  var base_plays = base_node.children;
+  var interim_plays = interim_base_node.children;
+  var new_base_plays = base_node.children;
+  var new_interim_plays = base_node.children;
+  for (var i=index; i<(base_plays.length - index); i++) {
+    var base_move = base_plays[i].move;
+    new_base_plays.push(base_plays[i]);
+    for (var j=index; j<(base_plays.length - index); j++) { // looks thru the interim tree for the matching move
+      if (interim_plays[j].move === base_move) {
+        new_interim_plays.push(interim_plays[j]);
+        break;}
+    }
+  }
+  base_node.children = new_base_plays;
+  interim_base_node.children = new_interim_plays;
+  return [base_node, interim_base_node]; // this might still be wrong, but even if not perfect may be better
+
+}
+
+// merges parallel tree with main tree, returns updated main tree
+// you should check (base_node.state === interim_base_node.state) before calling <- maybe stringify
+// we should see if we need to check vs. a deadline
+function tree_merge(base_node, interim_base_node) {
+  base_node.visits += interim_base_node.interim_visits; // adds # of visits
+  base_node.value += interim_base_node.interim_value; // adds additional value
+
+  if (interim_base_node.children.length === 0) {return base_node}; // base case returns when copy has no children
+
+  if (base_node.children.length !== interim_base_node.children.length) {console.log("merge length mismatch"); return base_node}; // false if different # children
+  for (var i=0; i<interim_base_node.children.length; i++) {
+    if (base_node.children[i].move !== interim_base_node.children[i].move) { // tries to fix if out of order
+      [base_node, interim_base_node] = resort_merging_nodes(base_node, interim_base_node, i);
+      if (base_node.children[i].move !== interim_base_node.children[i].move) {continue}; // if it doesn't work again, moves to next.
+    } var result = tree_merge(base_node.children[i], interim_base_node.children[i]); // calls itself for each child
+    if (result) {base_node.children[i] = result};
+  } return base_node;
+}
+
+// --------------------
+// DEBUGGING FUNCTIONS
+// --------------------
+
+// Debugger master function.
+// Only need to include treelevels if tree=true.
+// Only need to include node_chosen if move=true.
+function debug (move=false, tree=false, treelevels,
+                  sequence=false, length=false, node_chosen) {
+  if (tree) { print_tree(base_node, "", "   ", treelevels) };
+  if (sequence) { print_best_sequence(base_node) };
+  if (length) { console.log("Tree length: ", tree_length(base_node)) };
+  if (move) { console.log(node_chosen.move, node_chosen.value / node_chosen.visits) };
+}
+
+// Prints the whole tree out.
+ function print_tree(node, prefix, children_prefix, levels) {
+    if (levels === 0) {
+        return true;
+    }
+    var string = node.move + " (" + node.value + ", " + node.visits + ")\n";
+    console.log(prefix + string);
+    extra_space = " ".repeat(Math.floor(string.length / 1.5));
+    for (var i=0; i<node.children.length; i++) {
+        if (i === node.children.length - 1) {
+            print_tree(node.children[i], children_prefix + "|__ ", children_prefix + "    " + extra_space, levels - 1);
+        } else {
+            print_tree(node.children[i], children_prefix + "|-- ", children_prefix + "|   " + extra_space, levels - 1);
+        }
+    }
+ }
+
+// Prints the sequence of moves with the highest value.
+ function print_best_sequence(node) {
+    while (node.children.length !== 0) {
+        var best_score = 0;
+        var best_child = node.children[0];
+        for (var i=0; i<node.children.length; i++) {
+            if (node.children[i].value > best_score) {
+                best_score = node.children[i].value;
+                best_child = node.children[i];
+            }
+        }
+        node = best_child;
+        console.log(node.move);
+    }
+ }
+
+// Prints the max length of the tree.
+ function tree_length(node) {
+    if (node.children.length === 0) {
+        return 0}
+    var max_length = 0;
+    for (var i=0; i<node.children.length; i++) {
+        child_length = tree_length(node.children[i]);
+        if (child_length > max_length) {
+            max_length = child_length;
+        }
+    }
+    return max_length + 1;
+ }
+
+
+// Random auxiliary function.
+ function random_choice (seq) {
+  return seq[Math.floor(Math.random()*seq.length)];
+}
+
+//==============================================================================
+// Basics
+//==============================================================================
+
+function findroles (rules)
+ {if (! grounded) {return non_ground_findroles(rules)};
+  return basefinds('R',seq('role','R'),seq(),rules)}
+
+function findbases (rules)
+ {if (! grounded) {return non_ground_findbases(rules)};
+  return basefinds('P',seq('base','P'),seq(),rules)}
+
+function findactions (rules)
+ {if (! grounded) {return non_ground_findactions(rules)};
+  return basefinds('A',seq('action','A'),seq(),rules)}
+
+function findinits (rules)
+ {if (! grounded) {return non_ground_findinits(rules)};
+  return basefinds('P',seq('init','P'),seq(),rules)}
+
+function findcontrol (facts,rules)
+ {if (! grounded) {return non_ground_findcontrol(facts, rules)};
+  return grounditem('control',facts,rules)}
+
+function findlegalp (move,facts,rules)
+ {if (! grounded) {return non_ground_findlegalp(move, facts, rules)};
+  return groundfindp(seq('legal',move),facts,rules)}
+
+function findlegalx (facts,rules)
+ {if (! grounded) {return non_ground_findlegalx(facts, rules)};
+  return grounditem('legal',facts,rules)}
+
+function findlegals (facts,rules)
+ {if (! grounded) {return non_ground_findlegals(facts, rules)};
+  return grounditems('legal',facts,rules)}
+
+function findreward (role,facts,rules)
+ {if (! grounded) {return non_ground_findreward(role, facts, rules)};
+  var value = groundvalue('goal',role,facts,rules);
+  if (value) {return value};
+  return 0}
+
+function findterminalp (facts,rules)
+ {if (! grounded) {return non_ground_findterminalp(facts, rules)};
+  return groundfindp('terminal',facts,rules)}
+
+//------------------------------------------------------
+function non_ground_findroles (rules)
+ {return compfinds('R',seq('role','R'),seq(),rules)}
+
+function non_ground_findbases (rules)
+ {return compfinds('P',seq('base','P'),seq(),rules)}
+
+function non_ground_findactions (rules)
+ {return compfinds('A',seq('action','A'),seq(),rules)}
+
+function non_ground_findinits (rules)
+ {return compfinds('P',seq('init','P'),seq(),rules)}
+
+function non_ground_findcontrol (facts,rules)
+ {return compfindx('X',seq('control','X'),facts,rules)}
+
+function non_ground_findlegalp (move,facts,rules)
+ {return compfindp(seq('legal',move),facts,rules)}
+
+function non_ground_findlegalx (facts,rules)
+ {return compfindx('X',seq('legal','X'),facts,rules)}
+
+function non_ground_findlegals (facts,rules)
+ {return compfinds('X',seq('legal','X'),facts,rules)}
+
+function non_ground_findreward (role,facts,rules)
+ {var value = compfindx('R',seq('goal',role,'R'),facts,rules);
+  if (value) {return value};
+  return 0}
+
+function non_ground_findterminalp (facts,rules)
+ {return compfindp('terminal',facts,rules)}
+
+//------------------------------------------------------------------------------
+
+function simulate (move,state,rules)
+ {if (! grounded) {return non_ground_simulate(move,state,rules)};
+  var deltas = groundexpand(move,state,rules);
+  var additions = [];
+  var deletions = [];
+  for (var i=0; i<deltas.length; i++)
+      {if (symbolp(deltas[i])) {additions.push(deltas[i]); continue};
+       if (deltas[i][0]==='not') {deletions.push(deltas[i][1]); continue};
+       additions.push(deltas[i])};
+  var newstate = [];
+  for (i = 0; i<state.length; i++)
+      {if (find(state[i],additions)) {continue};
+       if (find(state[i],deletions)) {continue};
+       newstate.push(state[i])};
+  return newstate.concat(additions)}
+
+function non_ground_simulate (move,state,rules)
+ {var deltas = compexpand(move,state,rules);
+  var additions = [];
+  var deletions = [];
+  for (var i=0; i<deltas.length; i++)
+      {if (symbolp(deltas[i])) {additions.push(deltas[i]); continue};
+       if (deltas[i][0]==='not') {deletions.push(deltas[i][1]); continue};
+       additions.push(deltas[i])};
+  var newstate = [];
+  for (i = 0; i<state.length; i++)
+      {if (find(state[i],additions)) {continue};
+       if (find(state[i],deletions)) {continue};
+       newstate.push(state[i])};
+  var outval = newstate.concat(additions);
+  return outval}
+
+//==============================================================================
+// groundfindp
+// grounditem
+// grounditems
+// groundvalue
+// groundvalues
+// groundexpand
+//==============================================================================
+
+function groundfindp (p,facts,rules)
+ {inferences = inferences + 1;
+  if (symbolp(p)) {return groundfindatom(p,facts,rules)};
+  if (p[0]==='same') {return equalp(p[1],p[2])};
+  if (p[0]==='distinct') {return !equalp(p[1],p[2])};
+  if (p[0]==='not') {return !groundfindp(p[1],facts,rules)};
+  if (groundfindbackground(p,facts,rules)) {return true};
+  return groundfindrs(p,facts,rules)}
+
+function groundcompute (rel,facts,rules)
+ {var answers = seq();
+  var data = facts;
+  for (var i=0; i<data.length; i++)
+      {if (operator(data[i])===rel) {answers.push(data[i])}};
+  data = indexees(rel,rules);
+  for (var i=0; i<data.length; i++)
+      {if (symbolp(data[i])) {if (equalp(data[i],rel)) {answers.push(rel)}}
+       else if (data[i][0]!=='rule')
+               {if (equalp(operator(data[i]),rel)) {answers.push(data[i])}}
+       else {if (equalp(operator(data[i]),rel) &&
+                 groundfindsubs(data[i],facts,rules))
+                {answers.push(data[i][1])}}};
+  return uniquify(answers)}
+
+function groundfindatom (p,facts,rules)
+ {if (p==='true') {return true};
+  if (p==='false') {return false};
+  if (groundfindbackground(p,facts,rules)) {return true};
+  return groundfindrs(p,facts,rules)}
+
+function groundfindbackground (p,facts,rules)
+ {//var data = factindexps(p,facts);
+  data = facts;
+  for (var i=0; i<data.length; i++)
+      {if (equalp(data[i],p)) {return true}};
+  return false}
+
+function groundfindrs (p,facts,rules)
+ {var data = viewindexps(p,rules);
+  for (var i=0; i<data.length; i++)
+      {if (symbolp(data[i])) {if (equalp(data[i],p)) {return true}}
+       else if (data[i][0]!=='rule') {if (equalp(data[i],p)) {return true}}
+       else {if (equalp(data[i][1],p) && groundfindsubs(data[i],facts,rules))
+                {return true}}};
+  return false}
+
+function groundfindsubs (rule,facts,rules)
+ {for (var j=2; j<rule.length; j++)
+      {if (!groundfindp(rule[j],facts,rules)) {return false}};
+  return true}
+
+function factindexps (p,theory)
+ {if (symbolp(p)) {return indexees(p,theory)};
+  var best = indexees(p[0],theory);
+  for (var i=1; i<p.length; i++)
+      {var dum = factindexps(p[i],theory);
+       if (dum.length<best.length) {best = dum}};
+  return best}
+
+//------------------------------------------------------------------------------
+
+function grounditem (rel,facts,rules)
+ {var data = facts;
+  for (var i=0; i<data.length; i++)
+      {if (symbolp(data[i])) {continue}
+       else if (data[i][0]===rel) {return data[i][1]}};
+  data = indexees(rel,rules);
+  for (var i=0; i<data.length; i++)
+      {if (symbolp(data[i])) {continue}
+       else if (data[i][0]!=='rule')
+               {if (data[i][0]===rel) {return data[i][1]}}
+       else {var head = data[i][1];
+             if (operator(head)===rel &&
+                 groundfindsubs(data[i],facts,rules))
+                {return (head[1])}}};
+  return false}
+
+function grounditems (rel,facts,rules)
+ {var answers=seq();
+  var data = facts;
+  for (var i=0; i<data.length; i++)
+      {if (symbolp(data[i])) {continue}
+       else if (data[i][0]===rel)
+               {answers.push(data[i][1])}};
+  data = indexees(rel,rules);
+  for (var i=0; i<data.length; i++)
+      {if (symbolp(data[i])) {continue}
+       else if (data[i][0]!=='rule')
+               {if (data[i][0]===rel)
+                   {answers.push(data[i][1])}}
+       else {var head=data[i][1];
+             if (operator(head)===rel &&
+                 groundfindsubs(data[i],facts,rules))
+                {answers.push(head[1])}}};
+  return uniquify(answers)}
+
+function groundvalue (rel,obj,facts,rules)
+ {var data = facts;
+  for (var i=0; i<data.length; i++)
+      {if (symbolp(data[i])) {continue}
+       else if (data[i][0]===rel && data[i][1]===obj) {return data[i][2]}};
+  data = indexees(rel,rules);
+  for (var i=0; i<data.length; i++)
+      {if (symbolp(data[i])) {continue}
+       else if (data[i][0]!=='rule')
+               {if (data[i][0]===rel && data[i][1]===obj) {return data[i][2]}}
+       else {var head=data[i][1];
+             if (operator(head)===rel && equalp(head[1],obj) &&
+                 groundfindsubs(data[i],facts,rules))
+                {return data[i][1][2]}}};
+  return false}
+
+function groundvalues (rel,obj,facts,rules)
+ {var answers=seq();
+  var data = facts;
+  for (var i=0; i<data.length; i++)
+      {if (symbolp(data[i])) {continue}
+       else if (data[i][0]===rel && data[i][1]===obj)
+               {answers.push(data[i][2])}};
+  data = indexees(rel,rules);
+  for (var i=0; i<data.length; i++)
+      {if (symbolp(data[i])) {continue}
+       else if (data[i][0]!=='rule')
+               {if (data[i][0]===rel && data[i][1]===obj)
+                   {answers.push(data[i][2])}}
+       else {var head=data[i][1];
+             if (operator(head)===rel && equalp(head[1],obj) &&
+                 groundfindsubs(data[i],facts,rules))
+                {answers.push(head[2])}}};
+  return uniquify(answers)}
+
+//------------------------------------------------------------------------------
+
+function groundexpand (seed,facts,rules)
+ {return zniquify(groundexpanddepth(seed,facts,rules,0))}
+
+function groundexpanddepth (seed,facts,rules,depth)
+ {if (symbolp(seed)) {return groundexpanddepthrs(seed,facts,rules,depth)};
+  if (seed[0]==='not') {return [seed]};
+  if (seed[0]==='and') {return groundexpanddepthand(seed,facts,rules,depth)};
+  if (seed[0]==='transition') {return groundexpanddepthtransition(seed,facts,rules,depth)};
+  if (depth>expanddepth) {return []};
+  return groundexpanddepthrs(seed,facts,rules,depth)}
+
+function groundexpanddepthand (seed,facts,rules,depth)
+ {var updates = [];
+  for (var i=1; i<seed.length; i++)
+      {updates = updates.concat(groundexpanddepth(seed[i],facts,rules,depth))};
+  return updates}
+
+function groundexpanddepthtransition (seed,facts,rules,depth)
+ {var updates = [];
+  if (compfindp(seed[1],facts,rules))
+     {updates = updates.concat(groundexpanddepth(seed[2],facts,rules,depth))};
+  return updates}
+
+function groundexpanddepthrs (seed,facts,rules,depth)
+ {var data = indexees('handler',rules);
+  var flag = false;
+  var updates = [];
+  for (var i=0; i<data.length; i++)
+      {if (symbolp(data[i])) {continue};
+       if (data[i][0]!=='handler') {continue};
+       if (equalp(data[i][1],seed))
+          {flag = true;
+           var rule = data[i][2];
+           updates = updates.concat(groundexpanddepth(rule,facts,rules,depth+1))}};
+  if (flag) {return updates};
+  return [seed]}
+
+
+//==============================================================================
+// End of player code
+//==============================================================================
+  </script>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#aabbbb'>
+  <center>
+    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr>
+        <td>
+
+<!--=======================================================================-->
+
+<center>
+  <table width='640' cellpadding='0'>
+    <tr>
+      <td width='180' align='center' valign='center'>
+        <img width='130' src='http://gamemaster.stanford.edu/images/ggp.jpg'/>
+      </td>
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Gamemaster</span><br/>
+      </td>
+      <td width='180' align='center' style='color:#000066;font-size:18px'>
+        <i>General<br/>Game<br/>Playing</i>
+      </td>
+    </tr>
+  </table>
+</center>
+
+<!--=======================================================================-->
+
+<br/>
+<table width='640' cellpadding='8' cellspacing='0' bgcolor='#f4f8f8' border='1'>
+  <tr height='40'>
+     <td align='center'>
+<table style='color:#000066;font-size:18px'>
+  <tr>
+    <td>
+Protocol: autoplayer<br/>
+Identifier: <span id='player'>help_let_me_out</span> <img src="http://gamemaster.stanford.edu/images/pencil.gif" onclick='doplayer()'/>
+    </td>
+  </tr>
+</table>
+    </td>
+  </tr>
+</table>
+<br/>
+
+<!--=======================================================================-->
+
+<center>
+  <br/>
+  <br/>
+  <input type='button' id='clearer' value='Clear' onclick='doclear()'/>
+  <input type='button' id='connector' value='Connect' onclick='doconnect()'/>
+  <input type='button' id='disconnector' value='Disconnect' disabled onclick='dodisconnect()' disabled/>
+  <br/>
+  <br/>
+  <textarea id='transcript' style='font-family:courier' rows='30' cols='80' readonly></textarea>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+
+<!--=======================================================================-->
+
+</html>
